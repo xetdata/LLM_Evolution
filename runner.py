@@ -249,7 +249,6 @@ def query_chatgpt(prompt, model, parameters):
         except openai.RateLimitError:
 
             if n_tries <= 16:
-
                 time.sleep(backoff_time)
                 backoff_time *= 2.0
                 n_tries += 1
@@ -258,10 +257,10 @@ def query_chatgpt(prompt, model, parameters):
             else:
                 raise
         
-        except openai.Timeout:
-            if n_tries <= 16:
-                time.sleep(2)
-                sys.stderr.write('R')
+        except Exception: 
+            if n_tries <= 8:
+                time.sleep(5.)
+                sys.stderr.write('E')
                 continue
             else:
                 raise
