@@ -23,7 +23,7 @@ import diskcache
 cache = diskcache.Cache("./cache")
     
 # Runs through a small subset of things to test it all out.
-test_mode = True
+test_mode = False
 
 # Change this to refresh results.  
 date_key = "2023-12-12"
@@ -171,7 +171,6 @@ all_models = ["gpt-3.5-turbo-0613", "gpt-3.5-turbo-0301"]# , "gpt-4-turbo", "gpt
 ##########################
 # runner.
 
-current_executor = None
 completion_count = 0
 total_count = 0
 
@@ -190,42 +189,42 @@ def run_prompt_list(input_list):
     """
     Runs a distinct collection of prompts that gets cached remotely. 
     """
-
-    global current_executor
-
-    local_futures = [None]*len(input_list)
-
-    def compute_result(xd):
-        response_full, response = query_chatgpt(xd["prompt"], xd["model"], xd.get("parameters", {}))
-
-        output_d = xd.copy()
-        output_d["response"] = response
-        output_d["response_full"] = response_full 
-
-        answer_extraction_name = xd.get("answer_extraction_method", None)
-
-        if answer_extraction_name:
-            answer_extraction = globals()[answer_extraction_name]
-            output_d["answer"] = answer_extraction(output_d)
-        else:
-            output_d["answer"] = output_d["response"] 
-
-        evaluation_method_name = xd.get("evaluation_method", None)
-        if evaluation_method_name:
-            evaluation_method = globals()[evaluation_method_name]
-            output_d["score"] = evaluation_method(output_d) 
-
-        return output_d
-
-    for i, xd in enumerate(input_list):
-        # xd here is the input dictionary of queries 
-        local_futures[i] = current_executor.submit(compute_result, xd)
     
-    ret = [None]*len(local_futures)
+    with ThreadPoolExecutor(max_workers=64) as executor:
 
-    for i, f in enumerate(local_futures):
-        ret[i] = f.result()
-        report_task_completed()
+        local_futures = [None]*len(input_list)
+
+        def compute_result(xd):
+            response_full, response = query_chatgpt(xd["prompt"], xd["model"], xd.get("parameters", {}))
+
+            output_d = xd.copy()
+            output_d["response"] = response
+            output_d["response_full"] = response_full 
+
+            answer_extraction_name = xd.get("answer_extraction_method", None)
+
+            if answer_extraction_name:
+                answer_extraction = globals()[answer_extraction_name]
+                output_d["answer"] = answer_extraction(output_d)
+            else:
+                output_d["answer"] = output_d["response"] 
+
+            evaluation_method_name = xd.get("evaluation_method", None)
+            if evaluation_method_name:
+                evaluation_method = globals()[evaluation_method_name]
+                output_d["score"] = evaluation_method(output_d) 
+
+            return output_d
+
+        for i, xd in enumerate(input_list):
+            # xd here is the input dictionary of queries 
+            local_futures[i] = executor.submit(compute_result, xd)
+        
+        ret = [None]*len(local_futures)
+
+        for i, f in enumerate(local_futures):
+            ret[i] = f.result()
+            report_task_completed()
     
     return ret
 
@@ -247,15 +246,28 @@ def query_chatgpt(prompt, model, parameters):
                             {"role" : "user", "content" : prompt}]
             )
             break
-        except (openai.RateLimitError, openai.Timeout):
+        except openai.RateLimitError:
+
             if n_tries <= 16:
 
                 time.sleep(backoff_time)
                 backoff_time *= 2.0
                 n_tries += 1
+                sys.stderr.write('R')
                 continue
             else:
                 raise
+        
+        except openai.Timeout:
+            if n_tries <= 16:
+                time.sleep(2)
+                sys.stderr.write('R')
+                continue
+            else:
+                raise
+
+
+
 
     # Return the text part of the response
     return {"model_dump" : response.model_dump_json(), 
@@ -267,38 +279,30 @@ def run_all():
     Runs all the results in the current configuration.
     """
 
-    with ThreadPoolExecutor(max_workers=64) as executor:
 
-        global current_executor
-        current_executor = executor
-        output_futures = []
+    output_data = []
 
-        for d in (all_datasets[:1] if test_mode else all_datasets):
-            base_prompt_lists = d.load()
-                
-            for (model, modification, base_prompts) in itertools.product(all_models, all_modifications, base_prompt_lists):
-
-                # Get all the base prompts together here.
-                prompts = [None]*len(base_prompts)
-                for i, bp in enumerate(base_prompts):
-                    p = bp.copy()
-                    p["prompt"] = modification.modify_prompt(p["base_prompt"])
-                    p["modification_tag"] = modification.tag
-                    p["answer_extraction_method"] = modification.answer_extraction_method
-                    p["model"] = model
-                    p["date_key"] = date_key
-                    prompts[i] = p
-                        
-                if test_mode:
-                    prompts = prompts[:1]
-                
-                output_futures.append(executor.submit(run_prompt_list, prompts))
-                    
-        output_data = []
-        for i, output in enumerate(output_futures):
-            result = output.result()
-            output_data += result
+    for d in (all_datasets[:1] if test_mode else all_datasets):
+        base_prompt_lists = d.load()
             
+        for (model, modification, base_prompts) in itertools.product(all_models, all_modifications, base_prompt_lists):
+
+            # Get all the base prompts together here.
+            prompts = [None]*len(base_prompts)
+            for i, bp in enumerate(base_prompts):
+                p = bp.copy()
+                p["prompt"] = modification.modify_prompt(p["base_prompt"])
+                p["modification_tag"] = modification.tag
+                p["answer_extraction_method"] = modification.answer_extraction_method
+                p["model"] = model
+                p["date_key"] = date_key
+                prompts[i] = p
+                    
+            if test_mode:
+                prompts = prompts[:1]
+
+            output_data += run_prompt_list(prompts)
+                
     sys.stderr.write('\nCompleted.\n')
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
