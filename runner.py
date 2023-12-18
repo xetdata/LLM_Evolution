@@ -23,7 +23,7 @@ import diskcache
 cache = diskcache.Cache("./cache")
     
 # Runs through a small subset of things to test it all out.
-test_mode = False
+test_mode = True
 
 # Change this to refresh results.  
 date_key = "2023-12-12"
@@ -184,13 +184,18 @@ def report_task_completed():
     if completion_count % 100 == 0: 
         sys.stderr.write(f" {completion_count} / {total_count}\n")
 
+@cache.memoize(typed=True, expire = None, tag="run_prompt_list")
+def load_or_run_prompt_list(input_list):
+    # Used with the decorator above
+    return run_prompt_list(input_list)    
+
 @xetcache.xetmemo
 def run_prompt_list(input_list):
     """
     Runs a distinct collection of prompts that gets cached remotely. 
     """
     
-    with ThreadPoolExecutor(max_workers=64) as executor:
+    with ThreadPoolExecutor(max_workers=16) as executor:
 
         local_futures = [None]*len(input_list)
 
@@ -228,6 +233,8 @@ def run_prompt_list(input_list):
     
     return ret
 
+seen_exceptions = set()
+
 
 # Cache local low-level results in the disk-backed cache 
 @cache.memoize(typed=True, expire = None, tag="query_chatgpt")
@@ -257,12 +264,20 @@ def query_chatgpt(prompt, model, parameters):
             else:
                 raise
         
-        except Exception: 
-            if n_tries <= 8:
-                time.sleep(5.)
+        except Exception as e:
+            if n_tries <= 4:
+                n_tries += 1
+                time.sleep(8.)
                 sys.stderr.write('E')
                 continue
             else:
+                error_str = str(e)
+                global seen_exceptions
+                if error_str not in seen_exceptions:
+                    sys.stderr.write(f"\n\nUnrecoverable exception encountered: {e}\n")
+                    sys.stderr.write(f"    Model = {model}, Context = {prompt}, \n\n")
+                    seen_exceptions.add(error_str)
+
                 raise
 
 
@@ -278,30 +293,40 @@ def run_all():
     Runs all the results in the current configuration.
     """
 
+    # Due to xetcache and others, using nested executors will 
+    with ThreadPoolExecutor(max_workers=4) as executor:
 
-    output_data = []
+        output_futures = []
+        n_prompt_variants = 0
 
-    for d in (all_datasets[:1] if test_mode else all_datasets):
-        base_prompt_lists = d.load()
-            
-        for (model, modification, base_prompts) in itertools.product(all_models, all_modifications, base_prompt_lists):
-
-            # Get all the base prompts together here.
-            prompts = [None]*len(base_prompts)
-            for i, bp in enumerate(base_prompts):
-                p = bp.copy()
-                p["prompt"] = modification.modify_prompt(p["base_prompt"])
-                p["modification_tag"] = modification.tag
-                p["answer_extraction_method"] = modification.answer_extraction_method
-                p["model"] = model
-                p["date_key"] = date_key
-                prompts[i] = p
-                    
-            if test_mode:
-                prompts = prompts[:1]
-
-            output_data += run_prompt_list(prompts)
+        for d in (all_datasets[:1] if test_mode else all_datasets):
+            base_prompt_lists = d.load()
                 
+            for (model, modification, base_prompts) in itertools.product(all_models, all_modifications, base_prompt_lists):
+
+                # Get all the base prompts together here.
+                prompts = [None]*len(base_prompts)
+                for i, bp in enumerate(base_prompts):
+                    p = bp.copy()
+                    p["prompt"] = modification.modify_prompt(p["base_prompt"])
+                    p["modification_tag"] = modification.tag
+                    p["answer_extraction_method"] = modification.answer_extraction_method
+                    p["model"] = model
+                    p["date_key"] = date_key
+                    prompts[i] = p
+                        
+                if test_mode:
+                    prompts = prompts[:1]
+
+                n_prompt_variants += prompts.len()
+                output_futures.append(executor.submit(load_or_run_prompt_list, prompts))
+    
+        sys.stderr.write(f"Querying or running on {n_prompt_variants} prompt variants .\n")
+        
+        output_data = []
+        for f in output_futures:
+            output_data += f.result() 
+
     sys.stderr.write('\nCompleted.\n')
 
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
