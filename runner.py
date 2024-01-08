@@ -9,6 +9,8 @@ import time
 import itertools
 import pandas as pd
 import pickle
+import json
+import random
 
 # Set up the open ai input
 import openai
@@ -23,10 +25,21 @@ import diskcache
 cache = diskcache.Cache("./cache")
     
 # Runs through a small subset of things to test it all out.
-test_mode = True
+test_mode = False 
 
 # Change this to refresh results.  
-date_key = "2023-12-12"
+date_key = "2023-12-18"
+
+##########################
+# Models
+
+all_models = ["gpt-3.5-turbo-1106", 
+              # "gpt-3.5-turbo-0613", 
+              "gpt-3.5-turbo-0301", 
+              "gpt-4-0613", 
+              "gpt-4-0314",
+              # "gpt-4-1106-preview"
+              ]
 
 #############################
 
@@ -104,10 +117,9 @@ class MMLU:
 
         return {"base_prompt" : prompt, 
                 "known_answer" : answer, 
-                "source_data" : input_row, 
+                "source_data" : list(input_row), 
                 "evaluation_method" : "evaluation_multiple_choice_match",
                 "source_tag" : self.__class__.__name__}
-
 
 all_datasets = [MMLU()]
 
@@ -131,9 +143,6 @@ class PromptSimpleExplanationFollowing:
     
     tag = "simple_explanation_following"
     answer_extraction_method = "answer_in_backticks"
-
-    def tag(self): 
-        return "simple_explanation_following"
     
     @staticmethod 
     def modify_prompt(text):
@@ -163,10 +172,6 @@ all_modifications = [
     PromptSimpleExplanationLeading]
 
 
-##########################
-# Models
-
-all_models = ["gpt-3.5-turbo-0613", "gpt-3.5-turbo-0301"]# , "gpt-4-turbo", "gpt-4-1106-preview"]
 
 ##########################
 # runner.
@@ -181,13 +186,22 @@ def report_task_completed():
     completion_count += 1
             
     sys.stderr.write('.')
+    sys.stderr.flush()
     if completion_count % 100 == 0: 
         sys.stderr.write(f" {completion_count} / {total_count}\n")
+
+def execute_prompt_list(tag, input_list):
+    print(f"{tag}: Running {len(input_list)} prompts.")
+    result = load_or_run_prompt_list(input_list)
+    print(f"{tag}: Completed {len(input_list)} prompts.")
+    return result
+
 
 @cache.memoize(typed=True, expire = None, tag="run_prompt_list")
 def load_or_run_prompt_list(input_list):
     # Used with the decorator above
     return run_prompt_list(input_list)    
+ 
 
 @xetcache.xetmemo
 def run_prompt_list(input_list):
@@ -195,11 +209,13 @@ def run_prompt_list(input_list):
     Runs a distinct collection of prompts that gets cached remotely. 
     """
     
-    with ThreadPoolExecutor(max_workers=16) as executor:
+    with ThreadPoolExecutor(32) as executor:
 
         local_futures = [None]*len(input_list)
 
         def compute_result(xd):
+            sys.stderr.write('r')
+            sys.stderr.flush()
             response_full, response = query_chatgpt(xd["prompt"], xd["model"], xd.get("parameters", {}))
 
             output_d = xd.copy()
@@ -220,16 +236,17 @@ def run_prompt_list(input_list):
                 output_d["score"] = evaluation_method(output_d) 
 
             return output_d
+        
+        ret = [None]*len(local_futures)
 
         for i, xd in enumerate(input_list):
             # xd here is the input dictionary of queries 
             local_futures[i] = executor.submit(compute_result, xd)
-        
-        ret = [None]*len(local_futures)
+            # ret[i] = compute_result(xd)
 
+        
         for i, f in enumerate(local_futures):
             ret[i] = f.result()
-            report_task_completed()
     
     return ret
 
@@ -246,6 +263,8 @@ def query_chatgpt(prompt, model, parameters):
     # Make the API call
     while True:
         try:
+            sys.stderr.write('a')
+            sys.stderr.flush()
             response = openai_client.chat.completions.create(
                 model = model,
                 messages = [{"role" : "system", 
@@ -256,10 +275,11 @@ def query_chatgpt(prompt, model, parameters):
         except openai.RateLimitError:
 
             if n_tries <= 16:
-                time.sleep(backoff_time)
-                backoff_time *= 2.0
+                time.sleep(random.uniform(1, backoff_time))
+                backoff_time += 1
                 n_tries += 1
                 sys.stderr.write('R')
+                sys.stderr.flush()
                 continue
             else:
                 raise
@@ -267,8 +287,9 @@ def query_chatgpt(prompt, model, parameters):
         except Exception as e:
             if n_tries <= 4:
                 n_tries += 1
-                time.sleep(8.)
+                time.sleep(5.)
                 sys.stderr.write('E')
+                sys.stderr.flush()
                 continue
             else:
                 error_str = str(e)
@@ -284,6 +305,7 @@ def query_chatgpt(prompt, model, parameters):
 
 
     # Return the text part of the response
+    report_task_completed()
     return {"model_dump" : response.model_dump_json(), 
               "response" : response.choices[0].message.content}
 
@@ -293,16 +315,16 @@ def run_all():
     Runs all the results in the current configuration.
     """
 
-    # Due to xetcache and others, using nested executors will 
-    with ThreadPoolExecutor(max_workers=4) as executor:
-
+    #with ThreadPoolExecutor(max_workers=1) as executor:
+    if True:
+        output_data = []
         output_futures = []
         n_prompt_variants = 0
 
         for d in (all_datasets[:1] if test_mode else all_datasets):
             base_prompt_lists = d.load()
                 
-            for (model, modification, base_prompts) in itertools.product(all_models, all_modifications, base_prompt_lists):
+            for (base_prompts, modification, model) in itertools.product(base_prompt_lists, all_modifications, all_models):
 
                 # Get all the base prompts together here.
                 prompts = [None]*len(base_prompts)
@@ -318,20 +340,34 @@ def run_all():
                 if test_mode:
                     prompts = prompts[:1]
 
-                n_prompt_variants += prompts.len()
-                output_futures.append(executor.submit(load_or_run_prompt_list, prompts))
-    
+                n_prompt_variants += len(prompts)
+                
+                output_data += execute_prompt_list(f"[model={model}, tag={modification.tag}]",  prompts)
+
+                if False:
+                    if len(prompts) > 64:
+                        i = 0
+                        while 64 * i < len(prompts):
+                            output_futures.append(executor.submit(execute_prompt_list, f"[model={model}, tag={modification.tag}]",  prompts[(i * 64):min((i + 1)*64, len(prompts))]))
+                            i += 1
+                    else:
+                        output_futures.append(executor.submit(execute_prompt_list, f"[model={model}, tag={modification.tag}]",  prompts))
+       
+        # output_futures.append(execute_prompt_list(f"[model={model}, tag={modification.tag}]",  prompts))
+        
         sys.stderr.write(f"Querying or running on {n_prompt_variants} prompt variants .\n")
         
-        output_data = []
         for f in output_futures:
-            output_data += f.result() 
+           output_data += f.result() 
+#            output_data += f 
 
     sys.stderr.write('\nCompleted.\n')
 
+    print(output_data)
+
     timestamp = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
-    filename = f"output_data/output_data-{timestamp}.pkl"
-    pickle.dump(output_data, open(filename, "wb"))
+    filename = f"output_data/output_data-{timestamp}.json"
+    json.dump(output_data, open(filename, "w"))
 
     print(f"Output saved to {filename}")
 
