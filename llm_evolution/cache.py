@@ -5,6 +5,8 @@ import hashlib
 from os.path import exists, join
 import os
 
+version_string=b"VERSION=1:"
+
 
 def cache_file(key):
     key_p = pickle.dumps(key, protocol=-1)
@@ -22,15 +24,21 @@ def load(key):
     try:
         path = cache_file(key)
         if exists(path):
-            return pickle.load(open(path, "rb"))
+            data = open(path, "rb").read()
+            if data[:len(version_string)] == version_string:
+                (_key, output) = pickle.loads(data[len(version_string):])
+                return output
+            else:
+                return pickle.loads(data)
         else:
             return None
     except:
-        return None
+        raise
 
 def save(key, value): 
     path = cache_file(key)
-    pickle.dump(value, open(path, "wb"), protocol=-1)
+    s = version_string + pickle.dumps((key, value), protocol=-1)
+    open(path, "wb").write(s)
 
 
 

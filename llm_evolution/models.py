@@ -4,14 +4,14 @@ all_models = [("ChatGPT", "gpt-3.5-turbo-1106", {"temperature": 0.0}),
               ("ChatGPT", "gpt-3.5-turbo-0613", {"temperature": 0.0}), 
               ("ChatGPT", "gpt-3.5-turbo-0301", {"temperature": 0.0}), 
               ("ChatGPT", "gpt-4-0613", {}), 
-              #("ChatGPT", "gpt-4-0314", {}),
-              # "gpt-4-1106-preview" 
+              #("ChatGPT", "gpt-4-0314", {"temperature": 0.0}),
+              #("ChatGPT", "gpt-4-1106-preview", {"temperature": 0.0}),
 
-              ("HF", "TinyLlama/TinyLlama-1.1B-Chat-v1.0", 
-               {"model" : {"torch_dtype" : torch.bfloat16}, "pipeline" : {"do_sample" : False, "top_k"  : 50}}),
+              ("HF", "TinyLlama/TinyLlama-1.1B-Chat-v1.0",  
+                {"model" : {"torch_dtype" : torch.bfloat16}, "pipeline" : {"do_sample" : False, "top_k" : 50}}),
               ("HF", "meta-llama/Llama-2-7b-chat-hf", 
-              {"model" : {"load_in_8bit" : True}, "pipeline" : {"do_sample" : False, "top_k"  : 50}}),
-              #("HF", "meta-llama/Llama-2-13b-chat-hf", 
+                {"model" : {"load_in_8bit" : True}, "pipeline" : {"do_sample" : False, "top_k" : 50}}),
+              # ("HF", "meta-llama/Llama-2-13b-chat-hf", 
               # {"model" : {"load_in_8bit" : True}, "pipeline" : {"do_sample" : False, "top_k"  : 50}}),
               # ("HF", "meta-llama/Llama-2-13b-chat-hf", {"load_in_8bit" : True}),
               # ("HF", "mistralai/Mistral-7B-v0.1",  {"load_in_4bit" : True})
@@ -19,9 +19,9 @@ all_models = [("ChatGPT", "gpt-3.5-turbo-1106", {"temperature": 0.0}),
     
 scoring_model = "gpt-3.5-turbo-0613"
 
-import xetcache
 import sys
 from .common import run_tag
+from .evaluation import score_all_answers
 
 def run_prompt_list(model_info, prompts):
     model_type, model_name, model_parameters = model_info
@@ -50,6 +50,9 @@ def run_prompt_list(model_info, prompts):
         d["model"] = model_name
         d["model_tag"] = model_tag
         d["run_tag"] = run_tag
+
+    # now, go through and score all the answers.
+    outputs = score_all_answers(model_tag, outputs)
 
     # Now, also, score everything using chatgpt
     score_gpt = sum(d["score_gpt"] for d in outputs) / len(outputs)

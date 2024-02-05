@@ -1,3 +1,3 @@
 # xet version 0
-filesize = 2207
-hash = 'ec32c8cd9ed89b3011d5af6dd9c97a427be837cdcb8ce7019275ed94dad70874'
+filesize = 1393
+hash = 'ca1f067e78ea74c6b26db12ca64f5a1e238f43453da766ab92eb6b31db0249d7'

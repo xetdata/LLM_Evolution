@@ -134,20 +134,14 @@ def run_prompt_list_chatgpt(model_tag, model_info, input_list):
 
             output_d = xd.copy()
             output_d.update(result_d)
-
-            output_d = score_answer_simple(output_d)
-            output_d = score_answer_chatgpt(output_d)
-
+            
             return output_d 
 
         
         ret = [None]*len(local_futures)
 
         for i, xd in enumerate(input_list):
-            # xd here is the input dictionary of queries 
             local_futures[i] = executor.submit(compute_result, xd)
-            # ret[i] = compute_result(xd)
-
         
         for i, f in enumerate(local_futures):
             ret[i] = f.result()

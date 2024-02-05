@@ -75,7 +75,7 @@ def score_answer_chatgpt(input_xd):
     The question is given as QUESTION: ```<question>```.
     The correct answer is given as CORRECT ANSWER: ```<answer>```.
     The student's answer given as STUDENT ANSWER: ```<answer>```. 
-    Respond with CORRECT if the student's answer is correct, and INCORRECT if the student's answer is wrong.  
+    Respond with CORRECT if the student's answer is correct, and WRONG if the student's answer is wrong.  
     Do not give any other explanation.
     """
 
@@ -88,11 +88,11 @@ def score_answer_chatgpt(input_xd):
 
     out_d = input_xd.copy()
 
-    out_d["scoring_model"] = scoring_model
-    out_d["score_response"] = result_d["response"]
-    out_d["scoring_model_dump"] = result_d
-    out_d["scoring_prompt"] = xd["prompt"]
-    out_d["score_gpt"] = 0 if "INCORRECT" in result_d["response"] else 1
+    out_d["score_gpt_model"] = scoring_model
+    out_d["score_gpt_response"] = result_d["response"]
+    out_d["score_gpt_model_dump"] = result_d
+    out_d["score_gpt_prompt"] = xd["prompt"]
+    out_d["score_gpt"] = 1 if result_d["response"] == "CORRECT" else 0 
 
     return out_d
 
@@ -113,3 +113,32 @@ def score_answer_simple(xd):
         xd["score_simple"] = evaluation_method(xd) 
     
     return xd
+
+
+def score_all_answers(model_tag, input_list): 
+
+    print("Scoring results for model {model_tag}:")
+
+    set_run_total(len(input_list))
+
+    with ThreadPoolExecutor(32) as executor:
+
+        local_futures = [None]*len(input_list)
+
+        def compute_scoring(xd):
+            xd = score_answer_simple(xd)
+            xd = score_answer_chatgpt(xd)
+            return xd
+        
+        ret = [None]*len(local_futures)
+
+        for i, xd in enumerate(input_list):
+            local_futures[i] = executor.submit(compute_scoring, xd)
+        
+        for i, f in enumerate(local_futures):
+            ret[i] = f.result()
+            
+    return ret
+
+        
+
